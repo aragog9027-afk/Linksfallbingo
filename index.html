@@ -97,7 +97,7 @@ h1 a:hover{text-decoration:underline}
 
 <script>
 /* ====== SETTINGS: edit these ====== */
-const SHEET_ID = "1LpNZAx_VaQm26X6oLbPqj0ye5Cb1ujg1X1O80_MPSp0";
+const SHEET_ID = "1SKzi4cDW3x22aZsw2KVV7PiK5YyJV3_2yPdvc2pRTeo";  // the long ID in the sheet's address: docs.google.com/spreadsheets/d/<THIS PART>/edit
 const TEAM_TABS = [ // [label, gid] – the gid is the number after "gid=" in each tab's address
   ["Team 1","416843436"],["Team 2","812537617"],["Team 3","2104094295"],
   ["Team 4","1310723156"],["Team 5","577190997"],["Team 6","269903896"]
@@ -158,6 +158,18 @@ const TILE_ITEMS = {
   "Each Cerb Crystal": { "Primordial crystal":"prim", "Pegasian crystal":"peg", "Eternal crystal":"etern" },
   "Complete Voidwaker": { "Voidwaker gem":"gem", "Voidwaker hilt":"hilt", "Voidwaker blade":"blade" },
 };
+/* Tiles that need a set number of pieces but have no (x2)/(x3) in their name. Cell under the tile can say "1 of 2" or be ticked. */
+const TILE_TOTALS = { "Twinflame Staff Pieces": 2 };
+/* Tiles completed by any one of several PAIRS. The cell under the tile can hold several items (multi-select dropdown, e.g. "Mace, Claws").
+   Format: "tile name": { pairs:[[item, item], ...], words:{ "item": "word to look for in the cell" } } */
+const TILE_PAIRS = {
+  "Wildy Weapon": {
+    pairs:[["Mace","Claws"],["Bow","Fangs"],["Sceptre","Skull"]],
+    words:{Mace:"mace",Bow:"bow",Sceptre:"sceptre",Claws:"claws",Fangs:"fangs",Skull:"skull"}
+  }
+};
+/* Bonus points for completed lines (not displayed anywhere) */
+const BONUS_ROW = 1, BONUS_COL = 1, BONUS_DIAG = 3;
 /* ================================== */
 
 let teams = [], countdown = REFRESH_SECONDS;
@@ -194,7 +206,7 @@ function jsonp(tab,sel){
 
 const useSel={};  // remembers which address worked for each tab, so each refresh needs just one request per team
 async function loadTeam([tab,gid], i){
-  const tries=[...new Set([useSel[tab],"gid="+gid,"sheet="+encodeURIComponent(tab)])].filter(Boolean);
+  const tries=[...new Set([useSel[tab],"sheet="+encodeURIComponent(tab),"gid="+gid])].filter(Boolean);  // tab name first: it survives re-uploading/copying the sheet, gids do not
   let err;
   for(const sel of tries){
     try{ const team=await loadFrom(tab,sel,i); useSel[tab]=sel; return team }
@@ -202,13 +214,15 @@ async function loadTeam([tab,gid], i){
   }
   throw err;
 }
+const TOTALS_LC=Object.fromEntries(Object.entries(TILE_TOTALS).map(([k,v])=>[k.toLowerCase().trim(),v]));
+const PAIRS_LC=Object.fromEntries(Object.entries(TILE_PAIRS).map(([k,v])=>[k.toLowerCase().trim(),v]));
 const ITEMS_LC=Object.fromEntries(Object.entries(TILE_ITEMS).map(([k,v])=>[k.toLowerCase().trim(),v]));
 async function loadFrom(tab,sel,i){
   const d=await jsonp(tab,sel);
   if(d.status==="error") throw new Error(`"${tab}": ${(d.errors&&d.errors[0]&&d.errors[0].detailed_message)||"sheet error"}`);
   const grid=d.table.rows.map(r=>(r.c||[]).map(c=>c&&c.v!=null?String(c.v).trim():""));
   const at=(r,c)=>(grid[r]||[])[c]||"";
-  const tiles=[]; let points=0, done=0;
+  const tiles=[]; let points=0, done=0, bonus=0;
   // Google treats the first rows as a header, so team name + players arrive as one column label
   const lab=((d.table.cols||[]).map(c=>c.label||"").find(l=>/Players:/i.test(l)))||"";
   const pi=lab.search(/Players:/i);
@@ -220,21 +234,46 @@ async function loadFrom(tab,sel,i){
     const m=raw.match(/\((\d+)\s*pts?\)/i);
     if(!m) return;
     const pts=+m[1], title=raw.replace(/\(\d+\s*pts?\)/i,"").trim();
-    const tv=at(r+1,c), on=/^(☑|true)/i.test(tv);
-    const named=ITEMS_LC[title.toLowerCase()];
-    let need=0, have=0, items=null;
-    if(named){  // named items: tick off each one the cell mentions
+    const tv=at(r+1,c); let on=/^(☑|true)/i.test(tv);
+    const named=ITEMS_LC[title.toLowerCase()], pr=PAIRS_LC[title.toLowerCase()];
+    let need=0, have=0, items=null, pairs=null;
+    if(pr){  // any one complete pair completes the tile
+      const lc=tv.toLowerCase(), got=n=>on||new RegExp("\\b"+pr.words[n].toLowerCase()).test(lc);
+      items=Object.keys(pr.words).map(label=>({label,got:got(label)}));
+      pairs=pr.pairs.map(p=>({a:p[0],b:p[1],ag:got(p[0]),bg:got(p[1])}));
+      have=items.filter(it=>it.got).length;
+      if(pairs.some(p=>p.ag&&p.bg)) on=true;
+    }else if(named){  // named items: tick off each one the cell mentions
       items=Object.entries(named).map(([label,word])=>({label,got:on||tv.toLowerCase().includes(word.toLowerCase())}));
       need=items.length; have=items.filter(it=>it.got).length;
     }else{      // counted items: "1 of 3" in the cell; once ticked ☑ the (x3) / leading number in the title gives the total
       const pm=tv.match(/(\d+)\s*of\s*(\d+)/i), tm=on&&(title.match(/\(x\s*(\d+)\)/i)||title.match(/^(\d+)\s/));
-      need=pm?+pm[2]:tm?+tm[1]:0; have=on?need:pm?+pm[1]:0;
+      const tot=TOTALS_LC[title.toLowerCase()]||0;
+      need=pm?+pm[2]:tm?+tm[1]:tot; have=on?need:pm?+pm[1]:0;
     }
     if(on){points+=pts;done++}
-    tiles.push({title,pts,on,need,have,items});
+    tiles.push({title,pts,on,need,have,items,pairs,r,c});
   }));
   if(!tiles.length) throw new Error(`"${tab}" has no tiles – check the gid`);
-  return {name:name||tab, players, tiles, points, done, color:COLORS[i%COLORS.length]};
+  // line bonuses: place tiles on the board by their position in the sheet, then check rows, columns and both diagonals
+  const rs=[...new Set(tiles.map(t=>t.r))].sort((a,b)=>a-b), cs=[...new Set(tiles.map(t=>t.c))].sort((a,b)=>a-b);
+  const N=Math.round(Math.sqrt(tiles.length)), square=N*N===tiles.length&&N>1;
+  let B=null, maxBonus=0;
+  if(square){
+    B=Array.from({length:N},()=>Array(N).fill(null));
+    if(rs.length===N&&cs.length===N) tiles.forEach(t=>{B[rs.indexOf(t.r)][cs.indexOf(t.c)]=t});
+    else tiles.forEach((t,i)=>{B[Math.floor(i/N)][i%N]=t});
+    maxBonus=N*BONUS_ROW+N*BONUS_COL+2*BONUS_DIAG;
+    const full=cells=>cells.every(t=>t&&t.on);
+    for(let i=0;i<N;i++){
+      if(full(B[i])) bonus+=BONUS_ROW;
+      if(full(B.map(row=>row[i]))) bonus+=BONUS_COL;
+    }
+    if(full(B.map((row,i)=>row[i]))) bonus+=BONUS_DIAG;
+    if(full(B.map((row,i)=>row[N-1-i]))) bonus+=BONUS_DIAG;
+    points+=bonus;
+  }
+  return {name:name||tab, players, tiles, points, done, bonus, maxBonus, color:COLORS[i%COLORS.length]};
 }
 
 let busy=false, lastData="";
@@ -321,7 +360,7 @@ const TILE_RULES = {
   "Virtus Piece": { counts:["Any piece of Virtus robes from any of the Forgotten Four",["Duke Sucellus","The Leviathan","The Whisperer","Vardorvis"]] },
   "Golden Tench": { counts:["A Golden Tench from Aerial Fishing"] },
   "COX Prayer Scroll": { counts:["A Dexterous or Arcane Prayer Scroll from the Chambers of Xeric"] },
-  "Wildy Weapon": { counts:["A revenant weapon AND the item that upgrades it, from its boss:",["Thammaron's Sceptre + Skull of Vet'ion (Vet'ion / Calvar'ion)","Viggora's Chainmace + Claws of Callisto (Callisto / Artio)","Craw's Bow + Fangs of Venenatis (Venenatis / Spindel)"]], excludes:["An upgrade item that doesn't match the weapon"] },
+  "Wildy Weapon": { counts:["Any one of these combinations (weapon + its upgrade item):",["Thammaron's Sceptre + Skull of Vet'ion (Vet'ion / Calvar'ion)","Viggora's Chainmace + Claws of Callisto (Callisto / Artio)","Craw's Bow + Fangs of Venenatis (Venenatis / Spindel)"]], excludes:["An upgrade item that doesn't match the weapon"] },
 };
 /* Shown under "Doesn't count" on every tile (except auto-tracked ones), from the General Rules */
 const GENERAL_EXCLUDES = [
@@ -345,19 +384,19 @@ function render(){
   // remember which tile/row had keyboard focus so a refresh doesn't knock it off
   const foc=document.activeElement&&document.activeElement.closest&&document.activeElement.closest(".row[data-i],.t[data-k]");
   const focSel=foc?(foc.dataset.i!=null?`.row[data-i="${foc.dataset.i}"]`:`.t[data-k="${foc.dataset.k}"]`):null;
-  const total=teams[0]?teams[0].tiles.reduce((a,t)=>a+t.pts,0):0;
+  const total=teams[0]?teams[0].tiles.reduce((a,t)=>a+t.pts,0)+teams[0].maxBonus:0;
   const order=teams.map((t,i)=>i).sort((a,b)=>teams[b].points-teams[a].points);
   $("lead").innerHTML=order.map((i,pos)=>{const t=teams[i];
     return `<div class="row" tabindex="0" role="button" aria-pressed="${openTeam===i}" aria-expanded="${openTeam===i}" data-i="${i}" style="--c:${t.color}">
       <div class="rk">${pos+1}</div>
       <div><div class="nm">${esc(t.name)}</div><div class="sub">${t.done} / ${t.tiles.length} tiles</div>
-      <div class="bar"><i style="width:${total?t.points/total*100:0}%"></i></div></div>
+      <div class="bar"><i style="width:${total?Math.min(100,t.points/total*100):0}%"></i></div></div>
       <div class="pt">${t.points}</div></div>`}).join("");
   const t=teams[openTeam];
   $("board").innerHTML=t?`<section class="team" style="--c:${t.color}">
       <h2>${esc(t.name)}<span>${t.points} pts</span></h2>
       <div class="players">${esc(t.players)}</div>
-      <div class="grid">${t.tiles.map((x,ki)=>`<div class="t${x.on?" on":x.have>0?" part":""}" data-k="${ki}" tabindex="0" role="button" aria-label="${esc(x.title)} – ${x.on?"complete":x.have>0?`${x.have} of ${x.need}`:"not done"}, show details">${x.need?`<em class="pg">${x.have}/${x.need}</em>`:""}${icon(x.title)}${esc(x.title)}<small>${x.pts} pts</small></div>`).join("")}</div></section>`:"";
+      <div class="grid">${t.tiles.map((x,ki)=>`<div class="t${x.on?" on":x.have>0?" part":""}" data-k="${ki}" tabindex="0" role="button" aria-label="${esc(x.title)} – ${x.on?"complete":x.have>0?`${x.pairs?x.have+" items":x.have+" of "+x.need}`:"not done"}, show details">${x.need&&!x.pairs?`<em class="pg">${x.have}/${x.need}</em>`:""}${icon(x.title)}${esc(x.title)}<small>${x.pts} pts</small></div>`).join("")}</div></section>`:"";
   if(focSel){ const el=document.querySelector(focSel); if(el) el.focus({preventScroll:true}) }
 }
 const esc=s=>s.replace(/[&<>"]/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c]));
@@ -382,13 +421,24 @@ function renderModal(){
   const rule=RULES_LC[x.title.toLowerCase().trim()];
   $("modal").firstElementChild.style.setProperty("--c",t.color);
   $("mbody").innerHTML=`<div class="mhead">${icon(x.title)}<h3 id="mtitle">${esc(x.title)}</h3></div>
-    <p class="mmeta">${esc(t.name)} · ${x.pts} pts<span class="mstat${x.on?" on":part?" part":""}">${x.on?"Complete ✓":part?`In progress · ${x.have}/${x.need}`:"Not done yet"}</span></p>
-    ${x.need?`<div class="mprog"><span class="pips">${items.map(it=>`<i${it.got?' class="got"':""}></i>`).join("")}</span>${x.have} of ${x.need} obtained</div>
+    <p class="mmeta">${esc(t.name)} · ${x.pts} pts<span class="mstat${x.on?" on":part?" part":""}">${x.on?"Complete ✓":part?(x.pairs?`In progress · ${x.have} item${x.have===1?"":"s"}`:`In progress · ${x.have}/${x.need}`):"Not done yet"}</span></p>
+    ${x.pairs?pairsHTML(x):""}
+    ${x.need&&!x.pairs?`<div class="mprog"><span class="pips">${items.map(it=>`<i${it.got?' class="got"':""}></i>`).join("")}</span>${x.have} of ${x.need} obtained</div>
     <div class="mrules mitems">
       <div class="ok"><h4>Got so far (${got.length})</h4>${got.length?list(got,"✓"):'<p class="mnone">Nothing yet</p>'}</div>
       <div class="need"><h4>Still needed (${still.length})</h4>${still.length?list(still,"○"):'<p class="mnone">Nothing – tile complete!</p>'}</div>
     </div>`:""}
     ${rulesHTML(rule)}`;
+}
+function pairsHTML(x){
+  const m=(n,g)=>`<b style="color:${g?"#6fdc8c":"#ffb15c"}">${g?"✓":"○"}</b> ${esc(n)}`;
+  const got=x.items.filter(i=>i.got), still=x.items.filter(i=>!i.got);
+  const list=(arr,mk)=>`<ul>${arr.map(i=>`<li><b>${mk}</b>${esc(i.label)}</li>`).join("")}</ul>`;
+  return `<div class="mprog"><span class="pips">${x.items.map(i=>`<i${i.got?' class="got"':""}></i>`).join("")}</span>${got.length} of ${x.items.length} items obtained</div>
+  <div class="mrules mitems"><div class="ok"><h4>Items checked off (${got.length})</h4>${got.length?list(got,"✓"):'<p class="mnone">Nothing yet</p>'}</div>
+  <div class="need"><h4>Not yet obtained (${still.length})</h4>${still.length?list(still,"○"):'<p class="mnone">All items obtained</p>'}</div></div>
+  <div class="mrules mitems"><div class="ok"><h4>Combinations – any one completes the tile</h4><ul>${x.pairs.map(p=>{const d=p.ag&&p.bg;
+    return `<li style="${d?"color:#6fdc8c":""}">${m(p.a,p.ag)} &nbsp;+&nbsp; ${m(p.b,p.bg)}${d?" – complete":""}</li>`}).join("")}</ul></div></div>`;
 }
 const bullets=(arr,cls="")=>`<ul>${arr.map((s,n)=>Array.isArray(s)?"":`<li${cls}>${esc(s)}${Array.isArray(arr[n+1])?`<ul class="sub">${arr[n+1].map(z=>`<li>${esc(z)}</li>`).join("")}</ul>`:""}</li>`).join("")}</ul>`;
 function rulesHTML(rule){
